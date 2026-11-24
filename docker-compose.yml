@@ -1,0 +1,84 @@
+name: p2-cdc-scd
+
+services:
+  postgres:
+    image: postgres:16.10-alpine
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=4", "-c", "max_wal_senders=4"]
+    environment:
+      POSTGRES_DB: operations
+      POSTGRES_USER: lab
+      POSTGRES_PASSWORD: lab
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/01-source.sql:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "lab", "-d", "operations"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  kafka:
+    image: apache/kafka:4.0.2
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_NUM_PARTITIONS: "1"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
+    volumes:
+      - kafkadata:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:9092"]
+      interval: 5s
+      timeout: 8s
+      retries: 24
+
+  connect:
+    image: quay.io/debezium/connect:3.3.1.Final
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: p2-connect
+      CONFIG_STORAGE_TOPIC: p2.connect.config
+      OFFSET_STORAGE_TOPIC: p2.connect.offsets
+      STATUS_STORAGE_TOPIC: p2.connect.status
+      CONFIG_STORAGE_REPLICATION_FACTOR: "1"
+      OFFSET_STORAGE_REPLICATION_FACTOR: "1"
+      STATUS_STORAGE_REPLICATION_FACTOR: "1"
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
+
+  lab:
+    profiles: ["demo"]
+    build: ./lab
+    depends_on:
+      postgres:
+        condition: service_healthy
+      connect:
+        condition: service_started
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      CONNECT_URL: http://connect:8083
+      POSTGRES_DSN: postgresql://lab:lab@postgres:5432/operations
+      WAREHOUSE_DIR: /warehouse
+    volumes:
+      - warehouse:/warehouse
+
+volumes:
+  pgdata:
+  kafkadata:
+  warehouse:
